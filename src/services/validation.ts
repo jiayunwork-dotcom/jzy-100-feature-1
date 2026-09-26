@@ -16,6 +16,26 @@ export const DEFAULTS: ExtractionOptions = {
   maxIterations: 200,
 };
 
+/** 语料级可调参数（在单篇参数之外，只作用于语料接口）。 */
+export interface CorpusOptions {
+  /**
+   * 语料稀有度合成强度 α，闭区间 [0, 1]：
+   * 0 = 完全按单篇原始分（稀有度因子恒为 1）；越大跨篇公共词被压得越狠。
+   */
+  rarityStrength: number;
+  /**
+   * 区分度视图中公共词的判定门槛 θ，开区间 (0, 1]：
+   * 词的成功篇覆盖率 df/N >= θ 即判为公共词。
+   */
+  commonThreshold: number;
+}
+
+/** 语料参数默认值。 */
+export const CORPUS_DEFAULTS: CorpusOptions = {
+  rarityStrength: 1,
+  commonThreshold: 0.8,
+};
+
 /** 单篇文档的输入：已分好词的句子数组，或原始文本。 */
 export interface DocumentInput {
   sentences?: string[][];
@@ -100,6 +120,40 @@ export function parseOptions(body: Record<string, unknown>): ExtractionOptions {
       failInvalid('maxIterations', 'INVALID_MAX_ITERATIONS', `必须是 >= 1 的整数，收到 ${JSON.stringify(v)}`);
     }
     opts.maxIterations = v;
+  }
+
+  return opts;
+}
+
+/**
+ * 校验并解析语料级参数，缺省项使用默认值。
+ * 两个参数都必须在统计阶段开始前通过校验，越界一律带原因打回。
+ */
+export function parseCorpusOptions(body: Record<string, unknown>): CorpusOptions {
+  const opts: CorpusOptions = { ...CORPUS_DEFAULTS };
+
+  if (body.rarityStrength !== undefined) {
+    const v = body.rarityStrength;
+    if (typeof v !== 'number' || Number.isNaN(v) || v < 0 || v > 1) {
+      failInvalid(
+        'rarityStrength',
+        'INVALID_RARITY_STRENGTH',
+        `必须落在闭区间 [0, 1]（0=完全按单篇原样，1=重度惩罚公共词），收到 ${JSON.stringify(v)}`,
+      );
+    }
+    opts.rarityStrength = v;
+  }
+
+  if (body.commonThreshold !== undefined) {
+    const v = body.commonThreshold;
+    if (typeof v !== 'number' || Number.isNaN(v) || v <= 0 || v > 1) {
+      failInvalid(
+        'commonThreshold',
+        'INVALID_COMMON_THRESHOLD',
+        `必须落在开区间 (0, 1]（篇数覆盖率达到该值才算公共词），收到 ${JSON.stringify(v)}`,
+      );
+    }
+    opts.commonThreshold = v;
   }
 
   return opts;
@@ -215,4 +269,24 @@ export function parseBatchRequest(body: unknown): Record<string, unknown>[] {
     }
   }
   return docs as Record<string, unknown>[];
+}
+
+/** 已校验的语料请求：逐篇请求体（仍按单篇规则逐篇校验）+ 语料级参数。 */
+export interface ParsedCorpusRequest {
+  documents: Record<string, unknown>[];
+  corpusOptions: CorpusOptions;
+}
+
+/**
+ * 校验语料请求体：documents 形态校验与批量接口一致（非空数组、元素为对象），
+ * 语料级两个参数在此一并校验；各篇内部的参数仍延迟到逐篇处理时按单篇规则判定，
+ * 因此单篇错误不会在请求层炸掉整批，而是落到该篇自己的错误位置。
+ */
+export function parseCorpusRequest(body: unknown): ParsedCorpusRequest {
+  if (!isPlainObject(body)) {
+    throw new AppError(ErrorCodes.INVALID_REQUEST, '请求体必须是 JSON 对象');
+  }
+  const documents = parseBatchRequest(body);
+  const corpusOptions = parseCorpusOptions(body);
+  return { documents, corpusOptions };
 }

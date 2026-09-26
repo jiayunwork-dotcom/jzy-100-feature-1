@@ -10,6 +10,8 @@
  *  - INVALID_TOP_K            返回词数上限不是 >= 1 的整数
  *  - INVALID_TOLERANCE        收敛阈值不是 > 0 的数
  *  - INVALID_MAX_ITERATIONS   迭代步数上限不是 >= 1 的整数
+ *  - INVALID_RARITY_STRENGTH  语料稀有度合成强度不在闭区间 [0, 1]
+ *  - INVALID_COMMON_THRESHOLD 公共词判定门槛不在开区间 (0, 1]
  *  - NOT_CONVERGED            达到迭代步数上限仍未收敛（不允许返回半成品分数）
  */
 export const ErrorCodes = {
@@ -21,6 +23,8 @@ export const ErrorCodes = {
   INVALID_TOP_K: 'INVALID_TOP_K',
   INVALID_TOLERANCE: 'INVALID_TOLERANCE',
   INVALID_MAX_ITERATIONS: 'INVALID_MAX_ITERATIONS',
+  INVALID_RARITY_STRENGTH: 'INVALID_RARITY_STRENGTH',
+  INVALID_COMMON_THRESHOLD: 'INVALID_COMMON_THRESHOLD',
   NOT_CONVERGED: 'NOT_CONVERGED',
 } as const;
 
@@ -36,6 +40,8 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   INVALID_TOP_K: 400,
   INVALID_TOLERANCE: 400,
   INVALID_MAX_ITERATIONS: 400,
+  INVALID_RARITY_STRENGTH: 400,
+  INVALID_COMMON_THRESHOLD: 400,
   NOT_CONVERGED: 422,
 };
 

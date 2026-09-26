@@ -4,7 +4,8 @@
 返回按重要度排好序的关键词及分数。基于 Fastify、TypeScript、Node.js 20 实现，
 图与迭代算法全部自行实现，不依赖任何图计算/搜索引擎类第三方库。
 
-服务无状态：不落库、不缓存，每次请求现算现还。
+服务无状态：不落库、不缓存，每次请求现算现还。跨篇语料统计也只活在
+单次请求的生命周期内，请求结束即释放，绝不跨请求记账。
 
 ## 算法（钉死的实现）
 
@@ -26,26 +27,77 @@
 4. **截断排序**：按分数从高到低；同分时按词的字典序升序（稳定）；
    返回数量 = `min(topK, 实际入图词数)`。
 
+### 语料感知重加权（仅 `/v1/corpus/keywords`，老接口一行不变）
+
+当调用方一次提交一整批同主题文档并声明"这是一个语料整体"时，服务在**不改动
+上述单篇算法**的前提下，额外走一条独立的**两趟流程**（先扫全批统计、再回头
+给每篇定稿），在单篇原始分上叠加跨文档稀有度调节：
+
+```
+N     = 成功入图的文档篇数（失败的篇不进分母）
+df(w) = 包含词 w 的成功文档篇数（同一篇出现多次只计 1）
+
+idfFactor(w) = ln((N + 1) / (df(w) + 1)) + 1        （恒正，且 ≤ 1）
+rarity(w)    = idfFactor(w) ^ rarityStrength         （α ∈ [0, 1]）
+finalWeight_d(w) = 单篇原始分_d(w) × rarity(w)
+```
+
+由公式直接钉死、且被测试逐条卡住的关系：
+
+- **单篇退化对齐**：`N = 1` 时所有词 `df = 1`，`idfFactor = ln(2/2)+1 = 1`，
+  稀有度对每个词都一样（恒为 1），重加权后的关键词与把该篇丢给
+  `/v1/keywords` 的结果**逐位一致**；
+- **方向单调不反**：固定 N 时 df 只增不减，`idfFactor` 与 `rarity` 只降不升，
+  因此把一个词人为塞进更多篇后，它在原篇的最终权重只能**下降或持平**；
+  反之扩大语料使该词更稀有时权重上升；
+- **α = 0 完全原样**：`rarity` 恒为 1，多篇语料中每篇结果与其单篇接口结果一致；
+  α 越接近 1，跨篇公共词被压得越狠；
+- **满批词不被加码**：`df = N` 时稀有度恒为 1，其权重只由本篇地位决定。
+
+**语料级区分度视图**（与单篇关键词两码事，分别取用、互不覆盖）：
+
+```
+公共词 common     ：df(w) / N >= commonThreshold（θ ∈ (0, 1]，默认 0.8）
+个性词 distinctive ：其余全部入图词，归属到每一个包含它的篇
+区分度_d(w)       = 单篇原始分_d(w) × rarity(w)   （本篇突出 × 别篇沉默）
+```
+
+公共词单列并按覆盖率降序；每篇个性词按区分度降序。**公共词与个性词互斥，且
+二者并集恰好穷尽所有成功篇图中的入图词**——一个词不会既是公共又是个性，也
+不会两头不沾而消失。个性词不要求只在一篇出现：未达公共门槛的词可同时出现在
+多篇的个性列表中。
+
+**坏篇隔离**：某篇触发校验错误或算法错误（含 `NOT_CONVERGED`）时，该篇不进
+分母 N、不贡献任何 df、不改变其它篇结果，但仍按提交顺序在 `results` 与
+`corpusView.documents` 中占一个明确的错误位置（`ok:false` + 错误码）。
+
 ## 目录结构（按职责拆模块）
 
 ```
 src/
   core/
-    tokenize.ts     分词、切句、停用词过滤（唯一的停用词判断）
-    graph.ts        共现图构建（滑窗、边权累加、孤立节点保留）
-    rank.ts         迭代打分、收敛判定、未收敛报错
-    select.ts       结果截断与排序
-    errors.ts       错误码与统一错误类型
-    types.ts        共享类型
+    tokenize.ts        分词、切句、停用词过滤（唯一的停用词判断）
+    graph.ts           共现图构建（滑窗、边权累加、孤立节点保留）
+    rank.ts            迭代打分、收敛判定、未收敛报错
+    select.ts          结果截断与排序
+    corpusStats.ts     语料文档频次统计（两趟流程·第一趟，df/N）
+    rarity.ts          稀有度因子与单篇分数重加权（两趟流程·第二趟）
+    discriminative.ts  公共词/个性词划分与区分度视图（两趟流程·第二趟）
+    errors.ts          错误码与统一错误类型
+    types.ts           共享类型
   services/
-    validation.ts   输入校验层（非法参数不进入图构建）
-    keywordService.ts  单篇流水线编排
+    validation.ts      输入校验层（非法参数不进入图构建/语料统计）
+    keywordService.ts  单篇流水线编排（语料流程复用同一底层分析）
     batchService.ts    批量调度（逐篇独立、互不影响）
+    corpusService.ts   语料两趟编排（扫全批统计 -> 逐篇重加权定稿）
   routes/index.ts   Fastify 接口
   server.ts         服务入口（固定端口 8080）
 test/               node:test 自动化测试
 Dockerfile          容器内跑测试 + 构建 + 启动
 ```
+
+`core/` 下分词、建图、迭代打分三个钉死模块新老接口共用，语料能力只做叠加，
+核心算法一处未改、未另起炉灶。
 
 ## 本地运行
 
@@ -150,6 +202,68 @@ curl -s -X POST localhost:8080/v1/keywords \
 }
 ```
 
+### `POST /v1/corpus/keywords` —— 语料感知关键词（跨篇稀有度 + 区分度视图）
+
+请求体形如：
+
+```json
+{
+  "documents": [ <单篇请求体>, <单篇请求体>, "..."],
+  "rarityStrength": 1.0,
+  "commonThreshold": 0.8
+}
+```
+
+- `documents`：非空数组，每个元素是与 `/v1/keywords` 完全相同的单篇请求体
+  （可各自带 `document` / `stopwords` / `windowSize` / `damping` / `topK` 等）；
+  逐篇按单篇规则解析，某篇失败只影响它自己的结果项；
+- `rarityStrength`（α）：可选，闭区间 **[0, 1]**，默认 `1`。
+  `0` = 完全按单篇原样（稀有度恒为 1），越大对跨篇公共词惩罚越重。
+  越界返回 `INVALID_RARITY_STRENGTH`（400，带字段名与原因）；
+- `commonThreshold`（θ）：可选，开区间 **(0, 1]**，默认 `0.8`。
+  词的成功篇覆盖率 `df/N >= θ` 判为公共词。
+  越界返回 `INVALID_COMMON_THRESHOLD`（400）。
+
+两个语料参数都在**校验层**拦下，越界不会进入任何统计阶段。
+
+响应（`results` 与 `corpusView.documents` 均与提交顺序一一对齐）：
+
+```json
+{
+  "results": [
+    {
+      "ok": true,
+      "result": {
+        "keywords": [ { "word": "专题A", "score": 2.2139 }, "..."],
+        "nodeCount": 6, "edgeCount": 9, "converged": true, "iterations": 17
+      }
+    },
+    { "ok": false, "error": { "code": "INVALID_DAMPING", "message": "...", "field": "damping" } }
+  ],
+  "corpusView": {
+    "commonWords": [
+      { "word": "背景", "documentFrequency": 3, "documentCount": 3, "ratio": 1 }
+    ],
+    "documents": [
+      { "ok": true, "distinctiveWords": [
+        { "word": "专题A", "baseScore": 1.3075, "rarity": 1.693, "distinctiveness": 2.2139 }
+      ]},
+      { "ok": false, "error": { "code": "INVALID_DAMPING", "message": "...", "field": "damping" } }
+    ]
+  },
+  "corpusDocumentCount": 2,
+  "rarityStrength": 1,
+  "commonThreshold": 0.8
+}
+```
+
+- `results[*].result.keywords` 是该篇**重加权后**的关键词（`score` 即最终权重），
+  排序/截断规则与单篇接口一致；
+- `corpusView` 是**语料级问题**的答案：`commonWords` 单列跨篇公共词，
+  `documents[*].distinctiveWords` 是各篇个性词（含 `baseScore` / `rarity` /
+  `distinctiveness`，按区分度降序），失败篇为 `ok:false` 错误位置；
+- `corpusDocumentCount` 是真正参与统计的成功篇数 N。
+
 ### `GET /health`
 
 返回 `{"status":"ok"}`。
@@ -167,6 +281,8 @@ curl -s -X POST localhost:8080/v1/keywords \
 | `INVALID_TOP_K` | 400 | 返回词数不是 ≥ 1 的整数 |
 | `INVALID_TOLERANCE` | 400 | 收敛阈值不是 > 0 的数 |
 | `INVALID_MAX_ITERATIONS` | 400 | 步数上限不是 ≥ 1 的整数 |
+| `INVALID_RARITY_STRENGTH` | 400 | 语料稀有度合成强度 α 不在闭区间 [0, 1] |
+| `INVALID_COMMON_THRESHOLD` | 400 | 公共词判定门槛 θ 不在开区间 (0, 1] |
 | `NO_TOKENS_AFTER_FILTER` | 422 | 内容非空，但分词并过滤停用词后一个词都不剩（含全停用词退化情形） |
 | `NOT_CONVERGED` | 422 | 达到步数上限仍未收敛 |
 
@@ -186,3 +302,20 @@ curl -s -X POST localhost:8080/v1/keywords \
 - 窗口宽度只调大时边数持平或增多；返回数量 = `min(topK, 节点数)`；
   分数降序、同分字典序；未收敛报错；批量逐篇隔离；建图接口不含分数；
   停用词在分词结果与图中都不出现（同一过滤逻辑）。
+
+`test/corpus.test.ts` 与 `test/corpusApi.test.ts` 专门钉住语料能力的四条关系：
+
+- **单篇退化与原接口一致**：语料只有一篇时，任意 α 下重加权关键词（词序与分数）
+  与 `/v1/keywords` 逐位相等；α=0 时多篇语料的每一篇也与各自单篇结果一致；
+- **稀有度方向单调**：纯函数级覆盖全部 α 与 df 相邻取值；服务级构造夹具验证
+  固定 N 下把目标词塞进 0/1/2/3 篇后其权重严格递减、df=N 时回到原始单篇分，
+  以及扩大语料（词变稀有）时权重上升；
+- **公共词与个性词互斥且穷尽**：公共集 ∩ 个性集为空，二者并集恰好等于全部
+  成功篇的入图词（节点由 `/v1/graph` 独立核对）；
+- **坏篇不污染统计**：校验错误 / `NO_TOKENS_AFTER_FILTER` / `NOT_CONVERGED`
+  三类坏篇都不进 `corpusDocumentCount`、不贡献 df、坏篇用词不出现在公共/个性
+  列表，且在 `results` 与 `corpusView.documents` 中按提交顺序占错误位置；
+  去掉坏篇后好篇结果与混入坏篇时完全一致。
+
+另覆盖：α=1 时篇内稀有专题词可反超满篇背景词、区分度视图与重加权关键词结构
+分离、语料参数越界在 400 校验层带 `field`/原因打回、语料请求无跨请求状态。

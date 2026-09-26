@@ -7,7 +7,8 @@ import { buildCooccurrenceGraph } from '../core/graph';
 import { rankNodes } from '../core/rank';
 import { selectTopKeywords } from '../core/select';
 import { StopwordFilter, tokenizeDocument } from '../core/tokenize';
-import type { CooccurrenceGraphData, KeywordScore, TokenSequence } from '../core/types';
+import type { CooccurrenceGraph } from '../core/graph';
+import type { CooccurrenceGraphData, KeywordScore, RankResult, TokenSequence } from '../core/types';
 import type { ParsedDocumentRequest } from './validation';
 
 export interface KeywordExtractionResult {
@@ -46,13 +47,26 @@ function buildGraphFromRequest(req: ParsedDocumentRequest) {
   return { sentences, graph };
 }
 
+/**
+ * 单篇全量分析（语料两趟流程复用）：
+ * 跑 分词 -> 建图 -> 迭代打分，返回图对象与全量入图词的原始单篇分数，
+ * 不做截断。底层与单篇接口是同一份分词/建图/打分实现，核心算法不另起炉灶。
+ */
+export function analyzeDocument(req: ParsedDocumentRequest): {
+  graph: CooccurrenceGraph;
+  rank: RankResult;
+  options: ParsedDocumentRequest['options'];
+} {
+  const { graph } = buildGraphFromRequest(req);
+  const { damping, tolerance, maxIterations } = req.options;
+  const rank = rankNodes(graph, damping, tolerance, maxIterations);
+  return { graph, rank, options: req.options };
+}
+
 /** 完整抽取流程：返回排好序、截断后的关键词及分数。 */
 export function extractKeywords(req: ParsedDocumentRequest): KeywordExtractionResult {
-  const { graph } = buildGraphFromRequest(req);
-  const { topK, damping, tolerance, maxIterations } = req.options;
-
-  const rank = rankNodes(graph, damping, tolerance, maxIterations);
-  const keywords = selectTopKeywords(rank, topK);
+  const { graph, rank } = analyzeDocument(req);
+  const keywords = selectTopKeywords(rank, req.options.topK);
 
   return {
     keywords,

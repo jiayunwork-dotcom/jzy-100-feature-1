@@ -5,14 +5,16 @@
  *   GET  /health           健康检查
  *   POST /v1/keywords      单篇文档关键词抽取
  *   POST /v1/keywords/batch 批量关键词抽取（逐篇独立，互不影响）
+ *   POST /v1/corpus/keywords 语料感知关键词抽取（跨篇稀有度重加权 + 区分度视图）
  *   POST /v1/graph         只做分词 + 建图，返回共现图结构（不跑迭代打分）
  *   POST /v1/graph/batch   批量建图检查
  */
 import Fastify, { type FastifyInstance } from 'fastify';
 import { AppError, toErrorBody } from '../core/errors';
 import { extractKeywordsBatch, inspectGraphBatch } from '../services/batchService';
+import { extractKeywordsCorpus } from '../services/corpusService';
 import { extractKeywords, inspectGraph } from '../services/keywordService';
-import { parseBatchRequest, parseDocumentRequest } from '../services/validation';
+import { parseBatchRequest, parseCorpusRequest, parseDocumentRequest } from '../services/validation';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -51,8 +53,13 @@ export function buildApp(): FastifyInstance {
     reply.status(200).send({ results });
   });
 
-  app.post('/v1/graph', async (request, reply) => {
-    const req = parseDocumentRequest(request.body);
+  app.post('/v1/corpus/keywords', async (request, reply) => {
+    const { documents, corpusOptions } = parseCorpusRequest(request.body);
+    const result = extractKeywordsCorpus(documents, corpusOptions);
+    reply.status(200).send(result);
+  });
+
+  app.post('/v1/graph', async (request, reply) => {    const req = parseDocumentRequest(request.body);
     const result = inspectGraph(req);
     reply.status(200).send(result);
   });
