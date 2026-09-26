@@ -26,10 +26,10 @@ export interface GraphInspectionResult {
 }
 
 /**
- * 分词 + 停用词过滤 + 建图（两个接口共用的一半流水线）。
+ * 分词 + 停用词过滤 + 建图（单篇接口与语料接口第一趟共用的一半流水线）。
  * 过滤后一个词都不剩时抛 NO_TOKENS_AFTER_FILTER。
  */
-function buildGraphFromRequest(req: ParsedDocumentRequest) {
+export function buildGraphFromRequest(req: ParsedDocumentRequest) {
   const filter = new StopwordFilter(req.stopwords);
   const sentences = tokenizeDocument(req.document, filter);
 

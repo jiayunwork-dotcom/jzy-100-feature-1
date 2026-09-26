@@ -2,17 +2,19 @@
  * Fastify 接口层：只做 HTTP 语义（状态码、JSON 序列化），业务全部委托给 services。
  *
  * 接口：
- *   GET  /health           健康检查
- *   POST /v1/keywords      单篇文档关键词抽取
- *   POST /v1/keywords/batch 批量关键词抽取（逐篇独立，互不影响）
- *   POST /v1/graph         只做分词 + 建图，返回共现图结构（不跑迭代打分）
- *   POST /v1/graph/batch   批量建图检查
+ *   GET  /health             健康检查
+ *   POST /v1/keywords        单篇文档关键词抽取
+ *   POST /v1/keywords/batch  批量关键词抽取（逐篇独立，互不影响）
+ *   POST /v1/keywords/corpus 语料级关键词抽取（跨篇稀有度重加权 + 公共词/个性词视图）
+ *   POST /v1/graph           只做分词 + 建图，返回共现图结构（不跑迭代打分）
+ *   POST /v1/graph/batch     批量建图检查
  */
 import Fastify, { type FastifyInstance } from 'fastify';
 import { AppError, toErrorBody } from '../core/errors';
 import { extractKeywordsBatch, inspectGraphBatch } from '../services/batchService';
+import { extractKeywordsCorpus } from '../services/corpusService';
 import { extractKeywords, inspectGraph } from '../services/keywordService';
-import { parseBatchRequest, parseDocumentRequest } from '../services/validation';
+import { parseBatchRequest, parseCorpusRequest, parseDocumentRequest } from '../services/validation';
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -49,6 +51,12 @@ export function buildApp(): FastifyInstance {
     const bodies = parseBatchRequest(request.body);
     const results = extractKeywordsBatch(bodies);
     reply.status(200).send({ results });
+  });
+
+  app.post('/v1/keywords/corpus', async (request, reply) => {
+    const req = parseCorpusRequest(request.body);
+    const result = extractKeywordsCorpus(req);
+    reply.status(200).send(result);
   });
 
   app.post('/v1/graph', async (request, reply) => {

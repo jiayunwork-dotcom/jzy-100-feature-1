@@ -216,3 +216,50 @@ export function parseBatchRequest(body: unknown): Record<string, unknown>[] {
   }
   return docs as Record<string, unknown>[];
 }
+
+/** 语料级可调参数的默认值。 */
+export const CORPUS_DEFAULTS = {
+  /** 稀有度合成强度 λ ∈ [0,1]：0 = 完全按单篇原样，1 = 对公共词最大惩罚 */
+  rarityStrength: 1,
+  /** 公共词判定门槛 τ ∈ (0,1]：df/N >= τ 的词判为公共词 */
+  commonThreshold: 0.8,
+} as const;
+
+/** 校验后的语料级请求。 */
+export interface ParsedCorpusRequest {
+  /** 逐篇请求体（每篇与单篇接口同构，逐篇独立校验、独立成败） */
+  documents: Record<string, unknown>[];
+  /** 稀有度合成强度 λ ∈ [0,1] */
+  rarityStrength: number;
+  /** 公共词判定门槛 τ ∈ (0,1] */
+  commonThreshold: number;
+}
+
+/**
+ * 校验语料级请求体：批量信封 + 语料参数。
+ * 语料参数越界一律在此（校验层）带原因打回，不会混到统计阶段才出错。
+ */
+export function parseCorpusRequest(body: unknown): ParsedCorpusRequest {
+  const documents = parseBatchRequest(body); // 内含“请求体必须是 JSON 对象”与信封校验
+  const obj = body as Record<string, unknown>;
+
+  let rarityStrength: number = CORPUS_DEFAULTS.rarityStrength;
+  if (obj.rarityStrength !== undefined) {
+    const v = obj.rarityStrength;
+    if (typeof v !== 'number' || Number.isNaN(v) || v < 0 || v > 1) {
+      failInvalid('rarityStrength', 'INVALID_RARITY_STRENGTH', `必须落在闭区间 [0, 1]，收到 ${JSON.stringify(v)}`);
+    }
+    rarityStrength = v;
+  }
+
+  let commonThreshold: number = CORPUS_DEFAULTS.commonThreshold;
+  if (obj.commonThreshold !== undefined) {
+    const v = obj.commonThreshold;
+    if (typeof v !== 'number' || Number.isNaN(v) || !(v > 0) || v > 1) {
+      failInvalid('commonThreshold', 'INVALID_COMMON_THRESHOLD', `必须落在区间 (0, 1]，收到 ${JSON.stringify(v)}`);
+    }
+    commonThreshold = v;
+  }
+
+  return { documents, rarityStrength, commonThreshold };
+}
